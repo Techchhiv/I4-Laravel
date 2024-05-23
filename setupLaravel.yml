@@ -1,0 +1,306 @@
+---
+- name: Setup Laravel Project Environment
+  hosts: ubuntu_server
+  become: yes
+
+  tasks:
+    - name: Add Repositroy ondrej/php to ubuntu
+      apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+
+    - name: Update apt packages
+      apt:
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - php8.3-fpm
+          - php-xml
+          - php8.3-mbstring
+          - npm
+          - composer
+          - mariadb-server
+          - php-mysql
+          - python3-mysql.connector
+          - python3-pymysql
+        state: present
+        update_cache: yes
+
+    - name: Secure MariaDB installation
+      become: yes
+      expect:
+        command: mysql_secure_installation
+        responses:
+          "Enter current password for root": "123"
+          "Set root password": "n"
+          "Remove anonymous users": "y"
+          "Disallow root login remotely": "y"
+          "Remove test database": "y"
+          "Reload privilege tables now": "y"
+          "Switch to unix_socket authentication": "n"
+          "Change the root password?": "n"
+
+    - name: Create Staging folder
+      file:
+        path: /var/www/html/staging
+        state: directory
+        owner: root
+        group: root
+        mode: "0777"
+
+    - name: Clone Repositroy into staging folder
+      git:
+        repo: https://github.com/Techchhiv/I4-Laravel.git
+        dest: /var/www/html/staging
+        update: yes
+        force: yes
+
+    - name: Run composer installl
+      command: composer install
+      args:
+        chdir: /var/www/html/staging
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: 1
+
+    - name: Run npm install in staging folder
+      command: npm install
+      args:
+        chdir: /var/www/html/staging
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: 1
+
+    - name: Copy .env file
+      command: cp .env.example .env
+      args:
+        chdir: /var/www/html/staging
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: 1
+
+    - name: Change MySQL information in .env
+      lineinfile:
+        path: /var/www/html/staging/.env
+        regexp: '^(#?\s*){{ item.key }}=.*'
+        line: "{{ item.key }}={{ item.value }}"
+      loop:
+        - { key: "DB_CONNECTION", value: "mysql" }
+        - { key: "DB_HOST", value: "localhost" }
+        - { key: "DB_PORT", value: "3306" }
+        - { key: "DB_DATABASE", value: "laravel" }
+        - { key: "DB_USERNAME", value: "root" }
+        - { key: "DB_PASSWORD", value: "123" }
+
+    - name: Generate Key
+      command: php artisan key:generate
+      args:
+        chdir: /var/www/html/staging
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: 1
+
+    - name: Change staging folder permission
+      file:
+        path: /var/www/html/staging
+        state: directory
+        owner: root
+        group: root
+        mode: "0777"
+        recurse: yes
+      become: yes
+
+    - name: Create database
+      mysql_db:
+        name: playbook
+        state: present
+        login_user: root
+        login_password: 123
+
+    - name: Migration
+      command: php artisan migrate --force
+      args:
+        chdir: /var/www/html/staging
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: 1
+
+    - name: Configure nginx for staging
+      blockinfile:
+        path: /etc/nginx/sites-available/staging.conf
+        block: |
+          server {
+            listen 80;
+            listen [::]:80;
+
+            server_name i4gic2024.staging;
+
+            root /var/www/html/staging/public;
+            index index.php;
+
+            location / {
+              try_files $uri $uri/ =404;
+            }
+
+            location ~ \.php$ {
+              include snippets/fastcgi-php.conf;
+              fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+            }
+
+            location ~ /\.ht {
+              deny all;
+            }
+          }
+        state: present
+        create: yes
+
+    - name: Create Symbolic link for staging
+      file:
+        src: /etc/nginx/sites-available/staging.conf
+        dest: /etc/nginx/sites-enabled/staging.conf
+        state: link
+
+    - name: Restart Nginx service
+      service:
+        name: nginx
+        state: restarted
+
+  post_tasks:
+    - name: Setup production (If staging succeeds)
+      block:
+        - name: Create Produciton folder
+          file:
+            path: /var/www/html/production
+            state: directory
+            owner: root
+            group: root
+            mode: "0777"
+
+        - name: Clone Repositroy into Proudction folder
+          git:
+            repo: https://github.com/Techchhiv/I4-Laravel.git
+            dest: /var/www/html/production
+            update: yes
+            force: true
+
+        - name: Run Composer install in production
+          command: composer install
+          args:
+            chdir: /var/www/html/production
+          environment:
+            COMPOSER_ALLOW_SUPERUSER: 1
+
+        - name: Run npm install in production
+          command: npm install
+          args:
+            chdir: /var/www/html/production
+          environment:
+            COMPOSER_ALLOW_SUPERUSER: 1
+
+        - name: Copy .env.example file
+          command: cp .env.example .env
+          args:
+            chdir: /var/www/html/production
+          environment:
+            COMPOSER_ALLOW_SUPERUSER: 1
+
+        - name: Change sql information in production .env
+          lineinfile:
+            path: /var/www/html/production/.env
+            regexp: '^(#?\s*){{ item.key }}=.*'
+            line: "{{ item.key }}={{ item.value }}"
+          loop:
+            - { key: "DB_CONNECTION", value: "mysql" }
+            - { key: "DB_HOST", value: "localhost" }
+            - { key: "DB_PORT", value: "3306" }
+            - { key: "DB_DATABASE", value: "playbook" }
+            - { key: "DB_USERNAME", value: "root" }
+            - { key: "DB_PASSWORD", value: "123" }
+
+        - name: Generate Key
+          command: php artisan key:generate
+          args:
+            chdir: /var/www/html/production
+          environment:
+            COMPOSER_ALLOW_SUPERUSER: 1
+
+        - name: Change Produciton folder permission
+          file:
+            path: /var/www/html/production
+            state: directory
+            owner: root
+            group: root
+            mode: "0777"
+            recurse: yes
+          become: yes
+
+        - name: Migrate in production
+          command: php artisan migrate --force
+          args:
+            chdir: /var/www/html/production
+          environment:
+            COMPOSER_ALLOW_SUPERUSER: 1
+
+        - name: Configure Nginx for Produciton
+          blockinfile:
+            path: /etc/nginx/sites-available/production.conf
+            block: |
+              server {
+                listen 80;
+                listen [::]:80;
+
+                server_name i4gic2024.com;
+
+                root /var/www/html/production/public;
+                index index.php;
+
+                location / {
+                  try_files $uri $uri/ =404;
+                }
+
+                location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+                }
+
+                location ~ /\.ht {
+                  deny all;
+                }
+              }
+            state: present
+            create: yes
+
+        - name: Create Symbolic link for nginx production
+          file:
+            src: /etc/nginx/sites-available/production.conf
+            dest: /etc/nginx/sites-enabled/production.conf
+            state: link
+
+        - name: Restart Nginx service for Production
+          service:
+            name: nginx
+            state: restarted
+
+    # - name: Configure Nginx for i4gic2024.com
+    #   blockinfile:
+    #     path: /etc/nginx/sites-available/default
+    #     block: |
+    #       server {
+    #         listen 80;
+    #         listen [::]:80;
+
+    #         server_name i4gic2024.com;
+
+    #         root /var/www/html/production/public;
+    #         index index.php;
+
+    #         location / {
+    #           try_files $uri $uri/ =404;
+    #         }
+    #         location ~ \.php$ {
+    #           include snippets/fastcgi-php.conf;
+    #           fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+    #         }
+    #         location ~ /\.ht {
+    #           deny all;
+    #         }
+    #       }
+    #   notify: Reload Nginx
